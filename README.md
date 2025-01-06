@@ -1,0 +1,1 @@
+This repository provides starter code for the ECE419 labs.
