@@ -1,0 +1,12 @@
+(?<host>\S*) (?<clock>{.*})\n(?<event>.*)
+
+client {"client":1}
+8233758864830419606 CreateTrace {}
+client {"client":2}
+8233758864830419606 GameStart {"Seed":32}
+client {"client":3}
+8233758864830419606 ClientMove {"GameState":null,"MoveRow":-1,"MoveCount":32}
+client {"client":4}
+364081447122649060 CreateTrace {}
+client {"client":5}
+364081447122649060 GameStart {"Seed":32}

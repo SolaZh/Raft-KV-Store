@@ -1,0 +1,6 @@
+{
+    "ServerBind": "127.0.0.1:7437",
+    "Secret": "",
+    "OutputFile": "output.log",
+    "ShivizOutputFile": "shiviz_output.log"
+}
