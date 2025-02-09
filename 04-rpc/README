@@ -1,0 +1,3 @@
+Shows how to use go RPC to implement a trivial kv store.
+
+go run kv.go

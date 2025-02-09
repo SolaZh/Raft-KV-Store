@@ -3,11 +3,13 @@ package kvsrv
 import "ece419/labrpc"
 import "crypto/rand"
 import "math/big"
+//import "time"
 
 
 type Clerk struct {
 	server *labrpc.ClientEnd
 	// You will have to modify this struct.
+	ClientID int64
 }
 
 func nrand() int64 {
@@ -21,6 +23,7 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.server = server
 	// You'll have to add code here.
+	ck.ClientID = nrand() //assign a unique clientID to this Clerk
 	return ck
 }
 
@@ -37,6 +40,17 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
+	args := GetArgs{Key: key, OpID: nrand()}
+	var reply GetReply
+
+	for attempts := 0; attempts < 20; attempts++{
+		ok := ck.server.Call("KVServer.Get", &args, &reply)
+		if ok {
+			return reply.Value
+		}
+		//time.Sleep(time.Duration(1) * 10 * time.Millisecond)
+	}
+	
 	return ""
 }
 
@@ -50,6 +64,24 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
 	// You will have to modify this function.
+	opID := nrand() // Unique ID for each operation
+    args := PutAppendArgs{
+        Key:      key,
+        Value:    value,
+        Op:       op,
+        ClientID: ck.ClientID,
+        OpID:     opID, 
+    }
+    var reply PutAppendReply
+
+    for attempts := 0; attempts < 20; attempts++ { // Infinite retry loop
+        ok := ck.server.Call("KVServer."+op, &args, &reply) // RPC call
+        if ok { // If the request was successful
+            return reply.OldValue
+        }
+		// time.Sleep(time.Duration(1) * 10 * time.Millisecond)
+    }
+	
 	return ""
 }
 
