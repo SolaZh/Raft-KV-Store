@@ -5,11 +5,13 @@ import (
     "sync"
     "sync/atomic"
     "time"
-
+    "bytes"
+    "encoding/gob"
     "ece419/labrpc"
 )
 
-// import "fmt"
+//import "fmt"
+
 
 // ApplyMsg is sent by each Raft peer to its service (tester or real KV server)
 // to indicate a newly-committed log entry.
@@ -96,6 +98,9 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
     Term    int
     Success bool
+
+    ConflictTerm  int  // The term of the conflicting entry, if any
+    ConflictIndex int  // The first index where this term appears, or log length if missing
 }
 
 
@@ -107,13 +112,41 @@ func (rf *Raft) GetState() (int, bool) {
 
 
 func (rf *Raft) persist() {
-    // Placeholder for Part 3C: Save Raft state (currentTerm, votedFor, log[]) to persister.
+    w := new(bytes.Buffer)
+    e := gob.NewEncoder(w)
+
+    // Encode currentTerm, votedFor, and the log
+    e.Encode(rf.currentTerm)
+    e.Encode(rf.votedFor)
+    e.Encode(rf.log)
+
+    data := w.Bytes()
+    rf.persister.Save(data, nil)
+
 }
 
 func (rf *Raft) readPersist(data []byte) {
-    // Placeholder for Part 3C: Restore previously persisted state.
-}
+    if len(data) == 0 {
+        return
+    }
+    r := bytes.NewBuffer(data)
+    d := gob.NewDecoder(r)
 
+    var currentTerm int
+    var votedFor int
+    var logEntries []LogEntry
+    if d.Decode(&currentTerm) != nil ||
+       d.Decode(&votedFor) != nil ||
+       d.Decode(&logEntries) != nil {
+        // handle error
+        return
+    }
+    rf.currentTerm = currentTerm
+    rf.votedFor = votedFor
+    rf.log = logEntries
+
+
+}
 
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
     // For Part 3D. Not needed here.
@@ -177,6 +210,10 @@ func (rf *Raft) startElection() {
     rf.currentTerm++
     termAtStart := rf.currentTerm
     rf.votedFor = rf.me
+
+
+    rf.persist()
+
     votes := 1
     rf.lastHeartbeat = time.Now() // reset to avoid immediate re-election
     lastLogIndex := len(rf.log) - 1
@@ -259,20 +296,17 @@ func (rf *Raft) heartbeatLoop() {
 // This function is called in the heartbeat loop while holding no lock; it reacquires the lock inside.
 func (rf *Raft) sendAppendEntriesToPeer(peerId int, leaderTerm int) {
     rf.mu.Lock()
-    // Double-check if we’re still leader, same term
     if rf.state != Leader || rf.currentTerm != leaderTerm {
         rf.mu.Unlock()
         return
     }
 
-    // Prepare arguments
     prevIndex := rf.nextIndex[peerId] - 1
     prevTerm := 0
     if prevIndex >= 0 {
         prevTerm = rf.log[prevIndex].Term
     }
-    entries := make([]LogEntry, 0)
-    // We send all log entries from nextIndex[peerId] onward
+    entries := []LogEntry{}
     if rf.nextIndex[peerId] < len(rf.log) {
         entries = rf.log[rf.nextIndex[peerId]:]
     }
@@ -287,18 +321,15 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int, leaderTerm int) {
     }
     rf.mu.Unlock()
 
-    // Send RPC
     var reply AppendEntriesReply
     ok := rf.sendAppendEntries(peerId, &args, &reply)
     if !ok {
         return
     }
 
-    // Process reply
     rf.mu.Lock()
     defer rf.mu.Unlock()
 
-    // If our term is stale, step down
     if reply.Term > rf.currentTerm {
         rf.currentTerm = reply.Term
         rf.state = Follower
@@ -307,17 +338,12 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int, leaderTerm int) {
         return
     }
 
-    // If still leader and term unchanged
     if rf.state == Leader && leaderTerm == rf.currentTerm {
         if reply.Success {
-            // Advance nextIndex and matchIndex
-            // nextIndex = old nextIndex + len(entries) we successfully appended
             matchLen := (prevIndex + 1) + len(entries)
             rf.matchIndex[peerId] = matchLen - 1
             rf.nextIndex[peerId] = matchLen
 
-            // Now try to update commitIndex if there is a log index that is replicated
-            // on a majority of servers and is in our currentTerm.
             for i := rf.commitIndex + 1; i < len(rf.log); i++ {
                 if rf.log[i].Term == rf.currentTerm {
                     count := 1
@@ -331,14 +357,27 @@ func (rf *Raft) sendAppendEntriesToPeer(peerId int, leaderTerm int) {
                     }
                 }
             }
-            // Signal the applier goroutine if commitIndex advanced
             rf.applyCond.Signal()
-
         } else {
-            // If AppendEntries fails, it usually means a mismatch => decrement nextIndex
-            if rf.nextIndex[peerId] > 1 {
-                rf.nextIndex[peerId]--
+            // Use conflict info for fast rollback:
+            if reply.ConflictTerm != -1 {
+                // Search for the last index in leader's log with ConflictTerm.
+                lastIndexOfTerm := -1
+                for i := len(rf.log) - 1; i >= 0; i-- {
+                    if rf.log[i].Term == reply.ConflictTerm {
+                        lastIndexOfTerm = i
+                        break
+                    }
+                }
+                if lastIndexOfTerm != -1 {
+                    rf.nextIndex[peerId] = lastIndexOfTerm + 1
+                } else {
+                    rf.nextIndex[peerId] = reply.ConflictIndex
+                }
+            } else {
+                rf.nextIndex[peerId] = reply.ConflictIndex
             }
+
         }
     }
 }
@@ -362,7 +401,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
         reply.Success = false
         return
     }
-    // If the term is newer, update ourselves
     if args.Term > rf.currentTerm {
         rf.currentTerm = args.Term
         rf.state = Follower
@@ -370,44 +408,50 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
         rf.persist()
     }
 
-    // At this point, terms match => treat it as a valid leader heartbeat
     rf.lastHeartbeat = time.Now()
-
     reply.Term = rf.currentTerm
 
     // Check log consistency with PrevLogIndex/PrevLogTerm
     if args.PrevLogIndex >= 0 {
         if args.PrevLogIndex >= len(rf.log) {
-            // We don't even have PrevLogIndex in local log => fail
             reply.Success = false
+            reply.ConflictIndex = len(rf.log)
+            reply.ConflictTerm = -1  // No entry exists at PrevLogIndex
             return
         }
         if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-            // Mismatch in term => fail
             reply.Success = false
+            reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+            // Find first index with that conflict term:
+            i := args.PrevLogIndex
+            for i > 0 && rf.log[i-1].Term == reply.ConflictTerm {
+                i--
+            }
+            reply.ConflictIndex = i
             return
         }
     }
 
-    // If we reach here, logs match => accept new entries
-    // Overwrite conflicting entries
+    // Logs match => accept new entries
     insertPos := args.PrevLogIndex + 1
+    changed := false
     for i, entry := range args.Entries {
         if insertPos+i < len(rf.log) {
-            // If there’s a conflict
             if rf.log[insertPos+i].Term != entry.Term {
-                // Truncate the existing conflict and append
                 rf.log = rf.log[:insertPos+i]
                 rf.log = append(rf.log, entry)
+                changed = true
             }
         } else {
-            // The log is shorter, just append
             rf.log = append(rf.log, entry)
+            changed = true
         }
+    }
+    if changed {
+        rf.persist()
     }
     reply.Success = true
 
-    // Update commitIndex if leaderCommit > commitIndex
     if args.LeaderCommit > rf.commitIndex {
         rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
         rf.applyCond.Signal()
@@ -490,8 +534,7 @@ func (rf *Raft) applier() {
         // Now apply all entries between lastApplied+1 and commitIndex inclusive
         rf.lastApplied++
         idx := rf.lastApplied
-		// fmt.Printf("[Server %d] apply log[%d], cmd=%v (commitIndex=%d)\n",
-        //    rf.me, idx, rf.log[idx].Command, rf.commitIndex)
+
 
         msg := ApplyMsg{
             CommandValid: true,
