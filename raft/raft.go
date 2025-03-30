@@ -192,7 +192,7 @@ func (rf *Raft) ticker() {
         }
 
         // Sleep a short random duration to avoid tight loops
-        ms := 50 + (rand.Int63() % 50)
+        ms := 25 + (rand.Int63() % 50)
         time.Sleep(time.Duration(ms) * time.Millisecond)
     }
 }
@@ -288,7 +288,7 @@ func (rf *Raft) heartbeatLoop() {
             }
             go rf.sendAppendEntriesToPeer(i, term)
         }
-        time.Sleep(100 * time.Millisecond) // Heartbeat interval
+        time.Sleep(10 * time.Millisecond) // Heartbeat interval
     }
 }
 
@@ -565,8 +565,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
         lastApplied: -1,
     }
 
-    // Random election timeout in [300..500] ms
-    rf.electionTimeout = time.Duration(300+rand.Intn(200)) * time.Millisecond
+    // Random election timeout in [150..300] ms
+    rf.electionTimeout = time.Duration(150+rand.Intn(150)) * time.Millisecond
     rf.lastHeartbeat = time.Now()
 
     // Read any previously persisted state
