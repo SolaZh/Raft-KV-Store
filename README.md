@@ -1,9 +1,13 @@
-This repository provides starter code for the ECE419 labs.
+# Raft Key-Value Store (ECE419 Project)
 
-For lab1, please look at lab1/README.md for more details.
+## Overview
 
-For lab2, please look at kvsrc/README.md for more details.
+This project is an implementation of the **Raft consensus algorithm** in Go, built as part of the ECE419 Distributed Systems course.
 
-For lab3, please look at raft/README.md for more details.
+The system provides a replicated key-value store that remains consistent across multiple nodes even in the presence of failures such as leader crashes or network delays.
 
-For lab4, please look at kvraft/README.md for more details.
+It implements the core components of Raft:
+- Leader election
+- Log replication
+- Safety guarantees for distributed consensus
+- Persistent state recovery
